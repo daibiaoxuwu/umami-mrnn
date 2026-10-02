@@ -1,0 +1,156 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Umami-MRNN</title>
+<meta name="description" content="Predict umami peptides from sequence with Umami-MRNN, running entirely in your browser.">
+<style>
+  :root {
+    --bg: #fbfaf7; --surface: #fff; --text: #1f2328; --muted: #5f6672; --line: #e3e0d8;
+    --accent: #b5532a; --accent-text: #fff; --yes: #2f7d4f; --no: #8a8f98; --err: #b42318;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #16171a; --surface: #1e2024; --text: #e8e6e1; --muted: #a0a4ab; --line: #33363c;
+            --accent: #e0855a; --accent-text: #16171a; --yes: #6cc191; --no: #8d9199; --err: #f0857a; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font: 16px/1.6 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  main { max-width: 760px; margin: 0 auto; padding: 48px 16px 64px; }
+  h1 { font-size: 2rem; margin: 0 0 4px; letter-spacing: -0.01em; }
+  h2 { font-size: 1.1rem; margin: 40px 0 12px; }
+  p { margin: 0 0 12px; }
+  a { color: var(--accent); }
+  .lead { color: var(--muted); font-size: 1.05rem; }
+  .paper { border-left: 3px solid var(--accent); padding: 4px 0 4px 14px; margin: 20px 0; color: var(--muted); font-size: .95rem; }
+  .paper strong { color: var(--text); font-weight: 600; }
+  textarea { width: 100%; min-height: 160px; padding: 12px; border: 1px solid var(--line); border-radius: 8px;
+             background: var(--surface); color: var(--text); font: 14px/1.5 ui-monospace, Consolas, monospace; resize: vertical; }
+  textarea:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
+  .hint { color: var(--muted); font-size: .875rem; margin-top: 6px; }
+  .actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; align-items: center; }
+  button, label.button { font: inherit; font-size: .95rem; padding: 8px 16px; border-radius: 8px; cursor: pointer;
+                         border: 1px solid var(--line); background: var(--surface); color: var(--text); }
+  button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-text); font-weight: 600; }
+  button:disabled { opacity: .5; cursor: default; }
+  input[type=file] { display: none; }
+  .table-wrap { overflow-x: auto; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); }
+  table { width: 100%; border-collapse: collapse; font-size: .95rem; }
+  th, td { text-align: left; padding: 8px 12px; border-bottom: 1px solid var(--line); }
+  th { color: var(--muted); font-weight: 500; font-size: .85rem; }
+  tr:last-child td { border-bottom: 0; }
+  td.seq { font-family: ui-monospace, Consolas, monospace; word-break: break-all; }
+  td.num { font-variant-numeric: tabular-nums; white-space: nowrap; }
+  td.yes, td.no { white-space: nowrap; }
+  .yes { color: var(--yes); font-weight: 600; } .no { color: var(--no); } .err { color: var(--err); }
+  #summary { color: var(--muted); font-size: .9rem; margin: 0 0 8px; }
+  footer { margin-top: 56px; padding-top: 16px; border-top: 1px solid var(--line); color: var(--muted); font-size: .9rem; }
+  footer a { margin-right: 16px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Umami-MRNN</h1>
+  <p class="lead">Predict whether a peptide tastes umami, and estimate its taste threshold, from its sequence alone.</p>
+
+  <p class="paper">
+    <strong>Umami-MRNN: Deep learning-based prediction of umami peptide using RNN and MLP.</strong><br>
+    Lulu Qi, Jialuo Du, Yue Sun, Yongzhao Xiong, Xinyao Zhao, Daodong Pan, Yueru Zhi, Yali Dang, Xinchang Gao.
+    <em>Food Chemistry</em>, 2023.
+    <a href="https://doi.org/10.1016/j.foodchem.2022.134935">doi:10.1016/j.foodchem.2022.134935</a>
+  </p>
+
+  <h2>Peptides</h2>
+  <textarea id="input" spellcheck="false" placeholder="One sequence per line, or FASTA:&#10;>peptide_1&#10;EGS&#10;>peptide_2&#10;DQR"></textarea>
+  <p class="hint">Standard amino-acid letters, 2–39 residues each. Everything runs in your browser; nothing is uploaded.</p>
+  <div class="actions">
+    <button class="primary" id="run" disabled>Loading model…</button>
+    <label class="button" for="file">Open FASTA file</label>
+    <input type="file" id="file" accept=".fasta,.fa,.txt">
+    <button id="example">Load examples</button>
+  </div>
+
+  <section id="results" hidden>
+    <h2>Results</h2>
+    <p id="summary"></p>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>#</th><th>Name</th><th>Sequence</th><th>Prediction</th><th>Threshold (mmol/L)</th></tr></thead>
+        <tbody id="rows"></tbody>
+      </table>
+    </div>
+    <div class="actions"><button id="download">Download CSV</button></div>
+  </section>
+
+  <h2>How it works</h2>
+  <p>Umami-MRNN combines two networks. A multilayer perceptron reads 1,093 sequence descriptors: amino-acid
+    composition, dipeptide composition, dipeptide deviation from expected mean, and composition–transition–distribution
+    features. A recurrent network reads the sequence residue by residue, each encoded by overlapping physicochemical
+    properties. Their threshold estimates are averaged (weights 0.67 and 0.33). Peptides with a predicted threshold
+    below 40 mmol/L are classed as umami.</p>
+
+  <footer>
+    <a href="https://github.com/daibiaoxuwu/umami-mrnn">Demo source</a>
+    <a href="https://github.com/daibiaoxuwu/Umami-MRNN-train">Training code</a>
+    <a href="mailto:dujluo@gmail.com">Contact</a>
+  </footer>
+</main>
+
+<script type="module">
+import { loadModel, predict, parseInput } from './predict.js';
+
+const $ = id => document.getElementById(id);
+const input = $('input'), run = $('run');
+let model, results = [];
+
+const escape = s => s.replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
+
+function analyse() {
+  const records = parseInput(input.value);
+  results = records.map(({ name, seq }) => {
+    try { return { name, seq, ...predict(model, seq) }; }
+    catch (e) { return { name, seq, error: e.message }; }
+  });
+  $('rows').innerHTML = results.map((r, i) => `<tr>
+    <td>${i + 1}</td><td>${escape(r.name)}</td><td class="seq">${escape(r.seq)}</td>
+    ${r.error ? `<td class="err" colspan="2">${escape(r.error)}</td>`
+              : `<td class="${r.umami ? 'yes">Umami' : 'no">Non-umami'}</td><td class="num">${r.threshold.toFixed(2)}</td>`}
+  </tr>`).join('');
+  const umami = results.filter(r => r.umami).length, bad = results.filter(r => r.error).length;
+  $('summary').textContent = `${results.length} peptides: ${umami} predicted umami` + (bad ? `, ${bad} could not be read.` : '.');
+  $('results').hidden = results.length === 0;
+}
+
+function downloadCsv() {
+  const lines = [['name', 'sequence', 'prediction', 'threshold_mmol_per_L'],
+    ...results.map(r => [r.name, r.seq, r.error ? `error: ${r.error}` : r.umami ? 'umami' : 'non-umami',
+                         r.error ? '' : r.threshold.toFixed(4)])];
+  const csv = lines.map(row => row.map(v => `"${String(v).replace(/"/g, '""')}"`).join(',')).join('\n');
+  const a = Object.assign(document.createElement('a'),
+    { href: URL.createObjectURL(new Blob([csv], { type: 'text/csv' })), download: 'umami-mrnn-predictions.csv' });
+  a.click();
+  URL.revokeObjectURL(a.href);
+}
+
+run.onclick = analyse;
+$('download').onclick = downloadCsv;
+$('example').onclick = async () => { input.value = await (await fetch('example.fasta')).text(); };
+$('file').onchange = async e => {
+  const file = e.target.files[0];
+  if (file) { input.value = await file.text(); if (model) analyse(); }
+  e.target.value = '';
+};
+input.addEventListener('keydown', e => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey) && model) analyse(); });
+
+try {
+  model = await loadModel();
+  run.disabled = false;
+  run.textContent = 'Predict';
+} catch (e) {
+  run.textContent = 'Model failed to load';
+  console.error(e);
+}
+</script>
+</body>
+</html>
